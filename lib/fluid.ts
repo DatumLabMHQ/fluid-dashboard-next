@@ -14,8 +14,44 @@ import { cache } from 'react';
 import { getMultiChain } from './fluid/fluid-multichain';
 import { getFluidDex } from './fluid/fluid-dex';
 import { loadFluidVaults, type FluidVault } from './fluid/fluid-onchain';
+import { fetchJson } from './fluid/fetch-json';
+import { ttlMemo, TTL_5MIN } from './fluid/cache';
 import { chainLogo, protocolLogo } from './chains';
 import type { Market, MarketDetail, Overview, Point, Share } from './types';
+
+/**
+ * TVL-weighted supply APY across Fluid's own lending pools.
+ *
+ * Scoped to match the headline deposits figure, which is the whole reason this is computed here
+ * rather than read from the vendored yield universe: that universe filters to LENDING_PROJECTS,
+ * which carries `fluid-lending` only. Fluid's EVM book is `fluid-lending` and its Solana book is
+ * `jupiter-lend` (see fluid-multichain.ts), and the deposits headline counts both. Weighting on
+ * `fluid-lending` alone would put a $1.21B-scoped rate next to a $3.76B-scoped total.
+ *
+ * Pools without an `apyBase` are excluded rather than counted as zero.
+ */
+const FLUID_LENDING_PROJECTS = new Set(['fluid-lending', 'jupiter-lend']);
+
+interface LlamaPool {
+  project?: string;
+  apyBase?: number | null;
+  tvlUsd?: number | null;
+}
+
+const getWeightedSupplyApy = ttlMemo(async (): Promise<number | null> => {
+  const res = await fetchJson<{ data?: LlamaPool[] }>('https://yields.llama.fi/pools');
+  const rows = (res?.data ?? []).filter(
+    (p) =>
+      p.project !== undefined &&
+      FLUID_LENDING_PROJECTS.has(p.project) &&
+      typeof p.apyBase === 'number' &&
+      typeof p.tvlUsd === 'number' &&
+      p.tvlUsd > 0,
+  );
+  const total = rows.reduce((a, p) => a + (p.tvlUsd as number), 0);
+  if (total <= 0) return null;
+  return rows.reduce((a, p) => a + (p.apyBase as number) * (p.tvlUsd as number), 0) / total;
+}, TTL_5MIN);
 
 const risk = (u: number): Market['risk'] => (u > 85 ? 'high' : u > 70 ? 'moderate' : 'safe');
 const isoDay = (unixSeconds: number) => new Date(unixSeconds * 1000).toISOString().slice(0, 10);
@@ -62,12 +98,13 @@ function toMarket(v: FluidVault): Market {
 }
 
 export const loadOverview = cache(async (): Promise<Overview> => {
-  const [mc, dex, vaults] = await Promise.all([
+  const [mc, dex, vaults, supplyApy] = await Promise.all([
     getMultiChain(),
     getFluidDex().catch(() => null),
     // On-chain vault read. Falls back to an empty table rather than taking the page down: the
     // headline figures come from the multichain series and stay correct either way.
     loadFluidVaults('ethereum').catch(() => null),
+    getWeightedSupplyApy().catch(() => null),
   ]);
 
   const daily = mc.aggregateDaily;
@@ -90,7 +127,13 @@ export const loadOverview = cache(async (): Promise<Overview> => {
     .filter((s) => s.value > 0)
     .sort((a, b) => b.value - a.value);
 
+  // Plain vaults only. Fluid's smart vaults take an LP position as collateral, so they have no
+  // single liquidation threshold and no plain supplied amount (suppliedUsd is null by design).
+  // Listing them produced a column that read n/a on 40 of 144 rows, which looks like missing data
+  // rather than a vault type the table cannot describe. They are counted in the headline deposits,
+  // which come from the multichain series, not from this table.
   const markets = (vaults?.vaults ?? [])
+    .filter((v) => !v.isSmart)
     .map(toMarket)
     .filter((m) => m.supplied > 0 || m.borrowed > 0)
     .sort((a, b) => b.supplied - a.supplied);
@@ -108,10 +151,7 @@ export const loadOverview = cache(async (): Promise<Overview> => {
       borrowedChange7d: pctChange(borrowed, weekAgo?.borrows ?? 0),
       markets: markets.length,
       utilization: supplied > 0 ? (borrowed / supplied) * 100 : 0,
-      // Fluid's aggregate supply APY is not in this data layer. Passed undefined so the card reads
-      // n/a; a literal 0 would render "0.00%" under "What suppliers earn today", which is a false
-      // statement about a protocol paying real yield.
-      supplyApy: undefined as unknown as number,
+      supplyApy: (supplyApy ?? undefined) as unknown as number,
     },
     history,
     historyGrain: 'daily',
@@ -132,7 +172,7 @@ export const loadOverview = cache(async (): Promise<Overview> => {
 
 export const loadMarket = cache(async (id: string): Promise<MarketDetail | null> => {
   const [mc, vaults] = await Promise.all([getMultiChain(), loadFluidVaults('ethereum').catch(() => null)]);
-  const market = (vaults?.vaults ?? []).map(toMarket).find((m) => m.id === id);
+  const market = (vaults?.vaults ?? []).filter((v) => !v.isSmart).map(toMarket).find((m) => m.id === id);
   if (!market) return null;
   const daily = mc.aggregateDaily;
   const last = daily[daily.length - 1];
