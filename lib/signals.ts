@@ -18,6 +18,23 @@ import { getFluidDex } from "./fluid/fluid-dex"
 /** Public page a tweet should link to, not the raw deployment host. */
 const PUBLIC_BASE = "https://www.datumlab.xyz/fluid-terminal"
 
+/** Error messages without `any`: narrow the caught value before reading .message. */
+function errMessage(e: unknown): string {
+  return e instanceof Error ? e.message : typeof e === "string" ? e : "failed"
+}
+
+/** The bits of MetricSnapshot this feed reads. Structural, so the data layer stays free to grow. */
+interface SnapLike {
+  current: number
+  change24h?: number | null
+  change30d?: number | null
+}
+
+/** The bits of MultiChainData the chain decomposition reads. */
+interface MultiChainLike {
+  chains: Array<{ chain: string; label?: string; daily: Array<{ deposits: number }> }>
+}
+
 export type SignalUnit = "usd" | "pct" | "ratio" | "count"
 
 export interface SignalMetric {
@@ -108,8 +125,8 @@ const sumField = <K extends string>(pts: Array<{ t: number } & Record<K, number>
  * version reproduces Spark's own published figure. Restore it here only by computing both
  * sides from the same series.
  */
-function decomposeByChain(mc: any, windowDays: number): { value: number; prior: number; components: SignalComponent[] } | null {
-  const chains: any[] = Array.isArray(mc?.chains) ? mc.chains : []
+function decomposeByChain(mc: MultiChainLike, windowDays: number): { value: number; prior: number; components: SignalComponent[] } | null {
+  const chains = Array.isArray(mc?.chains) ? mc.chains : []
   if (!chains.length) return null
 
   const rows: SignalComponent[] = []
@@ -117,7 +134,7 @@ function decomposeByChain(mc: any, windowDays: number): { value: number; prior: 
   let prior = 0
 
   for (const c of chains) {
-    const daily: any[] = Array.isArray(c.daily) ? c.daily : []
+    const daily = Array.isArray(c.daily) ? c.daily : []
     if (daily.length < windowDays + 1) continue
     const now = daily[daily.length - 1]
     const then = daily[daily.length - 1 - windowDays]
@@ -156,7 +173,7 @@ export async function buildSignals(): Promise<SignalsPayload> {
   try {
     const mc = await getMultiChain()
     const s = mc.snap
-    const push = (key: string, label: string, m: any, unit: SignalUnit = "usd", href?: string) => {
+    const push = (key: string, label: string, m: SnapLike | undefined, unit: SignalUnit = "usd", href?: string) => {
       if (!m || !Number.isFinite(m.current)) return
       metrics.push({
         key,
@@ -212,8 +229,8 @@ export async function buildSignals(): Promise<SignalsPayload> {
         href: PUBLIC_BASE,
       })
     }
-  } catch (e: any) {
-    degraded.push(`multichain: ${e?.message ?? "failed"}`)
+  } catch (e: unknown) {
+    degraded.push(`multichain: ${errMessage(e)}`)
   }
 
   // ── DEX ───────────────────────────────────────────────────────────────────
@@ -278,8 +295,8 @@ export async function buildSignals(): Promise<SignalsPayload> {
         href: `${PUBLIC_BASE}/dex`,
       })
     }
-  } catch (e: any) {
-    degraded.push(`dex: ${e?.message ?? "failed"}`)
+  } catch (e: unknown) {
+    degraded.push(`dex: ${errMessage(e)}`)
   }
 
   return {
