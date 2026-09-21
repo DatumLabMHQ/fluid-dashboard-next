@@ -13,6 +13,7 @@
 import { cache } from 'react';
 import { getMultiChain } from './fluid/fluid-multichain';
 import { getFluidDex } from './fluid/fluid-dex';
+import { loadFluidVaults, type FluidVault } from './fluid/fluid-onchain';
 import { chainLogo, protocolLogo } from './chains';
 import type { Market, MarketDetail, Overview, Point, Share } from './types';
 
@@ -21,50 +22,53 @@ const isoDay = (unixSeconds: number) => new Date(unixSeconds * 1000).toISOString
 const pctChange = (now: number, then: number) => (then > 0 ? (now / then - 1) * 100 : 0);
 
 /**
- * Fluid's book by ASSET, not by pair. The data layer exposes supplied and borrowed per token per
- * chain, not per market, so a row is one asset across every chain. The kit's table template is
- * built for pair markets and renders a second label as "<loan> loan"; for a single-asset row that
- * is still true (Fluid does lend that asset), and the table caption says the rows are assets.
+ * A Fluid vault as the kit's Market.
+ *
+ * Vaults, not assets. An earlier version aggregated the token mix into one row per asset, which
+ * fought the table template (built for collateral/loan pairs) and could not show a liquidation
+ * threshold, because Fluid sets those per vault rather than per token. Reading the vaults on
+ * chain through Fluid's VaultResolver gives the real pair AND the real risk parameters.
+ *
+ * `liquidationThreshold` and `collateralFactor` arrive as 0-1 fractions decoded from Fluid's
+ * 1e4 bps, so both are scaled to percent here.
  */
-function assetRows(mix: Awaited<ReturnType<typeof getMultiChain>>['mix']): Market[] {
-  const supplied = new Map<string, number>();
-  const borrowed = new Map<string, number>();
-  for (const chain of mix) {
-    const snap = chain.periods.current;
-    if (!snap) continue;
-    for (const [token, v] of Object.entries(snap.supplied ?? {})) supplied.set(token, (supplied.get(token) ?? 0) + v);
-    for (const [token, v] of Object.entries(snap.borrowed ?? {})) borrowed.set(token, (borrowed.get(token) ?? 0) + v);
-  }
-  const tokens = new Set([...supplied.keys(), ...borrowed.keys()]);
-  return [...tokens]
-    .map((token) => {
-      const s = supplied.get(token) ?? 0;
-      const b = borrowed.get(token) ?? 0;
-      const util = s > 0 ? (b / s) * 100 : 0;
-      return {
-        id: token.toLowerCase(),
-        protocol: 'Fluid',
-        chain: 'All chains',
-        collateral: token,
-        loan: token,
-        supplied: s,
-        borrowed: b,
-        utilization: util,
-        supply_apy: 0,
-        borrow_apy: 0,
-        // Fluid's LTVs are per vault type and this aggregate has no single one, so it reads n/a
-        // rather than a made-up number.
-        lltv: undefined as unknown as number,
-        risk: risk(util),
-        logos: { protocol: protocolLogo('fluid'), chain: chainLogo('ethereum') },
-      } satisfies Market;
-    })
-    .filter((m) => m.supplied > 0 || m.borrowed > 0)
-    .sort((a, b) => b.supplied - a.supplied);
+function toMarket(v: FluidVault): Market {
+  const supplied = v.suppliedUsd ?? 0;
+  const borrowed = v.borrowedUsd ?? 0;
+  const util = supplied > 0 ? (borrowed / supplied) * 100 : 0;
+  const lt = v.liquidationThreshold * 100;
+  return {
+    id: v.address.toLowerCase(),
+    protocol: 'Fluid',
+    chain: 'Ethereum',
+    collateral: v.collateralSymbol,
+    loan: v.loanSymbol,
+    supplied,
+    borrowed,
+    utilization: util,
+    // Fluid's VaultResolver DOES return supplyRateVault / borrowRateVault, and the ABI here
+    // decodes them, but nothing in the source dashboard ever rendered them, so their scaling is
+    // unverified. Publishing a rate on a guessed scale is exactly the mistake that produced a
+    // $97,878B headline earlier in this build. n/a until checked against a known vault.
+    supply_apy: undefined as unknown as number,
+    borrow_apy: undefined as unknown as number,
+    // Real, read on chain. Smart vaults hold an LP position rather than a plain token, so a
+    // threshold of zero there means "not expressed this way", not "liquidates at zero".
+    lltv: lt > 0 ? lt : (undefined as unknown as number),
+    risk: risk(util),
+    address: v.address,
+    logos: { protocol: protocolLogo('fluid'), chain: chainLogo('ethereum') },
+  };
 }
 
 export const loadOverview = cache(async (): Promise<Overview> => {
-  const [mc, dex] = await Promise.all([getMultiChain(), getFluidDex().catch(() => null)]);
+  const [mc, dex, vaults] = await Promise.all([
+    getMultiChain(),
+    getFluidDex().catch(() => null),
+    // On-chain vault read. Falls back to an empty table rather than taking the page down: the
+    // headline figures come from the multichain series and stay correct either way.
+    loadFluidVaults('ethereum').catch(() => null),
+  ]);
 
   const daily = mc.aggregateDaily;
   const last = daily[daily.length - 1];
@@ -86,7 +90,10 @@ export const loadOverview = cache(async (): Promise<Overview> => {
     .filter((s) => s.value > 0)
     .sort((a, b) => b.value - a.value);
 
-  const markets = assetRows(mc.mix);
+  const markets = (vaults?.vaults ?? [])
+    .map(toMarket)
+    .filter((m) => m.supplied > 0 || m.borrowed > 0)
+    .sort((a, b) => b.supplied - a.supplied);
   const supplied = mc.snap.deposits.current;
   const borrowed = mc.snap.borrows.current;
   const theirs = mc.snap.tvl.current;
@@ -124,8 +131,8 @@ export const loadOverview = cache(async (): Promise<Overview> => {
 });
 
 export const loadMarket = cache(async (id: string): Promise<MarketDetail | null> => {
-  const mc = await getMultiChain();
-  const market = assetRows(mc.mix).find((m) => m.id === id);
+  const [mc, vaults] = await Promise.all([getMultiChain(), loadFluidVaults('ethereum').catch(() => null)]);
+  const market = (vaults?.vaults ?? []).map(toMarket).find((m) => m.id === id);
   if (!market) return null;
   const daily = mc.aggregateDaily;
   const last = daily[daily.length - 1];
@@ -139,10 +146,10 @@ export const loadMarket = cache(async (id: string): Promise<MarketDetail | null>
     history: [],
     rates: [],
     facts: [
-      { label: 'Asset', value: market.collateral },
+      { label: 'Pair', value: `${market.collateral} / ${market.loan}` },
       { label: 'Supplied', value: `$${market.supplied.toLocaleString()}` },
       { label: 'Borrowed', value: `$${market.borrowed.toLocaleString()}` },
-      { label: 'Scope', value: 'All chains', note: 'Fluid deposits are aggregated across every chain it is live on.' },
+      { label: 'Vault', value: market.address ?? 'n/a' },
     ],
     suppliers: [],
     healthBands: [],
