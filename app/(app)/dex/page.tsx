@@ -3,7 +3,7 @@
 // Behind the sign-in gate (datum.config.ts `gate.free` lists only '/'), so this is where the
 // detail lives. The overview stays open and deliberately thin.
 import type { Metadata } from 'next';
-import { AreaChart, BarChart, DonutChart } from '@/components/charts';
+import { AreaChart, BarChart, DonutChart, ScatterChart } from '@/components/charts';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { PageHeader } from '@/components/page-header';
 import { TurnoverBar } from '@/components/turnover-bar';
@@ -155,6 +155,29 @@ export default async function DexPage() {
           caption="Daily volume split by chain. Fluid's DEX started on Ethereum; the mix shows how much has moved elsewhere."
         >
           <AreaChart data={d.byChain.rows} x="day" series={d.byChain.series} stacked unit="usd" height={300} legend />
+        </Panel>
+      </div>
+
+      <div className="px-4 lg:px-6">
+        <Panel
+          title="Pool size against turnover"
+          caption={
+            <>
+              Every pool plotted by liquidity and by how hard that liquidity works. The interesting
+              pools are top-left: small books doing large volume. TVL is on a log scale because pool
+              sizes span orders of magnitude.
+            </>
+          }
+          footnote="Turnover is annualised volume over TVL. Twenty largest pools by volume."
+        >
+          <ScatterChart
+            points={d.poolEfficiency.map((p) => ({ name: p.name, x: p.tvl, y: p.turnover, z: p.volume7d }))}
+            xLabel="Pool TVL"
+            yLabel="Turnover"
+            yUnit="count"
+            xLog
+            height={320}
+          />
         </Panel>
       </div>
 

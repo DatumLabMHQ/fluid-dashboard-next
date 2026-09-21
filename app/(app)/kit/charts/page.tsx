@@ -3,7 +3,7 @@
 // live in docs/CHARTS.md in the kit.
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { PageHeader } from '@/components/page-header';
-import { AreaChart, BarChart, DonutChart, LineChart, RadarChart, RadialChart } from '@/components/charts';
+import { AreaChart, BarChart, DonutChart, LineChart, RadarChart, RadialChart, ScatterChart } from '@/components/charts';
 import { notFound } from 'next/navigation';
 import { platformStatus, showKit } from '@/lib/platform';
 
@@ -20,6 +20,17 @@ function Guide({ title, use, not, children }: { title: string; use: string; not:
     </Card>
   );
 }
+
+/** Size against efficiency: a few large, slow pools and a small, fast one. */
+const efficiency = [
+  { name: 'USDC / USDT', x: 240_000_000, y: 1.8, z: 430_000_000 },
+  { name: 'ETH / USDC', x: 120_000_000, y: 3.1, z: 370_000_000 },
+  { name: 'wstETH / ETH', x: 96_000_000, y: 0.6, z: 58_000_000 },
+  { name: 'WBTC / USDT', x: 41_000_000, y: 1.2, z: 49_000_000 },
+  { name: 'GHO / USDC', x: 12_000_000, y: 6.4, z: 77_000_000 },
+  { name: 'PYUSD / USDC', x: 4_200_000, y: 9.1, z: 38_000_000 },
+  { name: 'sUSDe / USDC', x: 1_100_000, y: 2.2, z: 2_400_000 },
+];
 
 export default async function ChartGuide() {
   if (!showKit(await platformStatus())) notFound();
@@ -50,6 +61,9 @@ export default async function ChartGuide() {
         </Guide>
         <Guide title="Donut chart" use="shares of one whole at one moment, two to six slices: share by protocol, by chain, by collateral. Hover isolates a slice; the centre shows the total." not="more than six slices (rank and group the rest as Other), change over time, or comparing two wholes.">
           <DonutChart items={byProtocol} unit="usd" height={220} centerLabel="supplied" />
+        </Guide>
+        <Guide title="Scatter chart" use="two measures across many items, to find the outliers: pool size against turnover, risk against return. Use xLog when the x values span orders of magnitude, which dollar amounts usually do. highlight marks our own points among peers." not="one value per category (use a bar), anything over time, or fewer than about eight points, where a table reads better.">
+          <ScatterChart points={efficiency} xLabel="Pool TVL" yLabel="Turnover" yUnit="count" xLog highlight={['GHO / USDC']} height={280} />
         </Guide>
         <Guide title="Radar chart" use="a profile across four to eight dimensions on one shared scale: a risk scorecard, one protocol against another." not="values on different scales, time series, more than three series, or anything that needs a precise reading.">
           <RadarChart data={radar} series={[{ key: 'Aave', label: 'Aave' }, { key: 'Morpho', label: 'Morpho' }]} height={260} legend />

@@ -4,6 +4,8 @@ export { AreaChart } from './area-chart';
 export { LineChart } from './line-chart';
 export { BarChart } from './bar-chart';
 export { DonutChart } from './donut-chart';
+export { ScatterChart } from './scatter-chart';
+export type { ScatterPoint } from './scatter-chart';
 export { RadarChart } from './radar-chart';
 export { RadialChart } from './radial-chart';
 export type { Row, Series } from './chart-utils';
