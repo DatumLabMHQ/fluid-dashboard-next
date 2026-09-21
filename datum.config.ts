@@ -52,6 +52,7 @@ export const config = {
   nav: [
     { href: '/', label: 'Overview' },
     { href: '/markets', label: 'Markets' },
+    { href: '/dex', label: 'Fluid DEX' },
     { href: '/methodology', label: 'Methodology' },
   ],
   // Shown on the methodology page. Keep them honest: what is read, how often, what it excludes.
