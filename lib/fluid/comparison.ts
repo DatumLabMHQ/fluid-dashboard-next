@@ -38,13 +38,51 @@ export interface RateComparison {
 
 const FLUID_PROJECT = "fluid-lending"
 
+/**
+ * A venue only enters a comparison when the pools that actually carry a rate add up to a
+ * real book for that asset.
+ *
+ * Without this the comparison reports rates off scraps. DefiLlama's /lendBorrow does not
+ * cover every pool: Fluid's $136.7M Ethereum USDC pool carries no borrow rate at all, so
+ * the weighted borrow was computed from two pools holding $339K between them and returned
+ * 0.40%, against Aave's 14.20%. Morpho Blue's Ethereum USDC appears as a single $68K
+ * market. Both would have published a cheapest-venue claim that is simply false.
+ *
+ * $25M is a judgement, not a derived figure: below it a venue's listed rate is not the
+ * rate anyone borrowing size would actually get.
+ */
+const MIN_RATED_BOOK_USD = 25_000_000
+
+/**
+ * The supplied book behind a row. `tvlUsd` on a lending pool is AVAILABLE liquidity, not
+ * the book, so a market at 99.9% utilisation looks tiny by it: Aave's main USDC market has
+ * $2.24B supplied and $2.3M available. Ranking or sizing on tvlUsd therefore picks side
+ * pools over the real market. Fall back to it only where the book is unreported.
+ */
+function suppliedBook(r: LendingPoolRow): number {
+  return r.totalSupplyUsd ?? r.tvlUsd ?? 0
+}
+
 function pickSupply(rows: LendingPoolRow[]): number | null {
   let best: LendingPoolRow | null = null
   for (const r of rows) {
     if (r.supplyApy == null) continue
-    if (!best || r.tvlUsd > best.tvlUsd) best = r
+    if (!best || suppliedBook(r) > suppliedBook(best)) best = r
   }
   return best?.supplyApy ?? null
+}
+
+/** Size of the pools carrying a rate, which is what the gate above is applied to. */
+function ratedBook(rows: LendingPoolRow[], metric: "supply" | "borrow"): number {
+  let total = 0
+  for (const r of rows) {
+    if (metric === "supply") {
+      if (r.supplyApy != null) total += suppliedBook(r)
+    } else if (r.borrowApy != null) {
+      total += r.totalBorrowUsd ?? 0
+    }
+  }
+  return total
 }
 
 function weightedBorrow(rows: LendingPoolRow[]): number | null {
@@ -91,6 +129,7 @@ export async function buildRateComparison(
   for (const peer of LENDING_PEERS) {
     const rows = byProject.get(peer.project) ?? []
     if (rows.length === 0) continue
+    if (ratedBook(rows, metric) < MIN_RATED_BOOK_USD) continue
     const value = metric === "supply" ? pickSupply(rows) : weightedBorrow(rows)
     if (value == null || !Number.isFinite(value)) continue
     points.push({

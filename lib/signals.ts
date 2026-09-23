@@ -14,6 +14,7 @@
 
 import { getMultiChain } from "./fluid/fluid-multichain"
 import { getFluidDex } from "./fluid/fluid-dex"
+import { buildAllRateComparisons } from "./fluid/comparison"
 
 /** Public page a tweet should link to, not the raw deployment host. */
 const PUBLIC_BASE = "https://www.datumlab.xyz/fluid-terminal"
@@ -297,6 +298,66 @@ export async function buildSignals(): Promise<SignalsPayload> {
     }
   } catch (e: unknown) {
     degraded.push(`dex: ${errMessage(e)}`)
+  }
+
+  // ── The cross-venue rate layer ────────────────────────────────────────────
+  // Emitted from this feed, under the NEUTRAL `market.*` namespace, because the
+  // normalisation engine lives here (lib/fluid/comparison.ts) and duplicating it in the
+  // Spark and Euler repos would give three feeds three slightly different answers for the
+  // same rate. One engine, one answer, and the Worker joins across assets.
+  //
+  // The normalisation is the hard part and is already settled: Ethereum only so the venues
+  // are comparable, ETH collapsed into WETH, supply APY from the venue's deepest pool for
+  // the asset, borrow APY size-weighted by borrowed USD so Morpho's many isolated markets
+  // do not each count as a venue.
+  //
+  // This is the one part of the desk that can say something on an ordinary day. A book
+  // moves a percent and there is nothing to write; the cheapest place to borrow USDC
+  // changes hands and there is.
+  try {
+    const [borrow, supply] = await Promise.all([
+      buildAllRateComparisons("borrow"),
+      buildAllRateComparisons("supply"),
+    ])
+    for (const c of [...borrow, ...supply]) {
+      // One venue is not a comparison. Skip rather than emit a spread of zero, which a
+      // rule would read as "every venue agrees" when the truth is "nobody else lists it".
+      if (c.points.length < 2) continue
+      // Venues within a basis point of each other are not a comparison. In practice this
+      // is the collateral-only assets, where nobody borrows so every supply APY rounds to
+      // zero (cbBTC reads a 0.001pp spread, weETH 0.00002pp), and emitting a row of zeroes
+      // is noise the ranking layer then has to wade through. Not tested against exactly
+      // zero, because these are floats and never quite are. If they ever diverge the
+      // comparison starts being emitted then.
+      const spreadValues = c.points.map((point) => point.value)
+      if (Math.max(...spreadValues) - Math.min(...spreadValues) < 0.01) continue
+      const asset = c.asset.toLowerCase()
+      const side = c.metric === "borrow" ? "borrow_apy" : "supply_apy"
+
+      for (const point of c.points) {
+        metrics.push({
+          key: `market.${side}.${asset}.${point.project.replace(/-/g, "_")}`,
+          label: `${point.label} ${c.assetLabel} ${c.metric} APY`,
+          value: point.value,
+          unit: "pct",
+          href: `${PUBLIC_BASE}/lending`,
+        })
+      }
+
+      // The spread between the best and worst venue. Widening means the venues disagree
+      // about the price of the same risk, which is the part worth writing about.
+      const values = c.points.map((point) => point.value)
+      const spread = Math.max(...values) - Math.min(...values)
+      metrics.push({
+        key: `market.${side}_spread.${asset}`,
+        label: `${c.assetLabel} ${c.metric} APY spread across venues`,
+        value: spread,
+        unit: "pct",
+        href: `${PUBLIC_BASE}/lending`,
+      })
+    }
+  } catch (e: unknown) {
+    degraded.push(`rate comparison: ${errMessage(e)}`)
   }
 
   return {
