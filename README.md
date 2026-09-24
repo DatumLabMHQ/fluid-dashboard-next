@@ -1,5 +1,28 @@
 # Fluid Research Terminal
 
+The Fluid (Instadapp) lending and DEX research terminal, rebuilt on
+[datum-databuild-kit](https://github.com/DatumLabMHQ/datum-databuild-kit).
+
+Served at **https://www.datumlab.xyz/fluid-terminal**.
+
+This repo also holds the cross-venue rate layer that the whole signal desk reads:
+`lib/fluid/yield-universe.ts` joins DefiLlama's `/pools` and `/lendBorrow`, and
+`lib/fluid/comparison.ts` normalises it into per-asset borrow and supply rates across six
+venues. `/api/signals` emits those under a neutral `market.*` namespace.
+
+It lives here, not in the Spark and Euler repos, so three feeds cannot give three slightly
+different answers for the same rate. A venue needs a $25M rated book to enter a comparison,
+because `/lendBorrow` does not cover every pool and averaging whatever it does cover reports
+rates off scraps.
+
+The overview is open to everyone; every other page is behind the sign-in gate.
+
+Pushing to `master` deploys to production.
+
+---
+
+# Fluid Research Terminal
+
 Fluid lending and DEX liquidity, built by Datum Labs.
 
 Built with [datum-databuild-kit](https://github.com/DatumLabMHQ/datum-databuild-kit). Every number comes from the
