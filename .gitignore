@@ -7,3 +7,6 @@ node_modules
 # playwright
 test-results/
 playwright-report/
+
+# incremental typecheck cache, ~1MB and churns on every build
+tsconfig.tsbuildinfo
