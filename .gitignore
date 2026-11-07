@@ -10,3 +10,6 @@ playwright-report/
 
 # incremental typecheck cache, ~1MB and churns on every build
 tsconfig.tsbuildinfo
+/dist/
+.vinext/
+.cloudflare/
